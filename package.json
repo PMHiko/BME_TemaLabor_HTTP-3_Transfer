@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@fails-components/webtransport": "^1.5.3",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.5.3"
+  }
+}

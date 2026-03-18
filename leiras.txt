@@ -1,0 +1,227 @@
+HTTP/3 WEBTRANSPORT MULTI-CLIENT CHAT - KOD FELEPESE ES MUKODESE
+=================================================================
+
+PROJEKT CELJA
+-------------
+Egy localhost fejlesztoi kornyezetbe szant, HTTP/3 WebTransport protokollon
+alapulo tobbfelhasznaloi chat alkalmazas. A kliensek kozvetlenul QUIC-alapu
+kapcsolaton keresztul kommunikalnak a szerverrel, HTTP-ra való visszaeses nelkul.
+A backend Node.js runtime-on fut, @fails-components/webtransport csomaggal,
+amely Google libquiche-t hasznal a QUIC/HTTP3 megvalositashoz.
+
+
+FAJLSTRUKTÚRA
+-------------
+BME_TemaLabor_HTTP-3_Transfer/
+│
+├── server.mjs                 - Node.js backend (HTTP/3 WebTransport + HTTP szerver)
+├── package.json               - Node.js fuggosegek
+│
+├── public/
+│   └── index.html             - Teljes frontend (HTML + CSS + JS egy fajlban)
+│
+└── certs/                     - Generalt tanusitvanyok (gitignore-ban)
+    ├── server.key             - ECDSA privat kulcs (mkcert altal generalt)
+    └── server.crt             - mkcert altal airt tanusitvany (CA-lanccel)
+
+
+TECHNOLOGIAI STACK
+------------------
+- Backend:   Node.js (ESM, server.mjs)
+- Csomag:    @fails-components/webtransport (libquiche-alapu HTTP/3)
+             @fails-components/webtransport-transport-http3-quiche (natív bináris)
+- Protokoll: HTTP/3 (QUIC/UDP alapú, TLS 1.3)
+- HTTP:      Node.js beépített http modul (statikus fájlok)
+- Frontend:  Vanilla JS + HTML5 + CSS3 (egyetlen fajl, keretrendszer nelkul)
+- Tanusitvany: mkcert (helyileg megbizható CA, Windows tanusitvány-tárolóba telepítve)
+
+
+PORTOK
+------
+- 4433 (UDP): HTTP/3 WebTransport szerver (QUIC + TLS)
+- 3000 (TCP): HTTP szerver a frontend kiszolgálásához
+
+
+=================================================================
+ELOFELTETELEK ES BEALLITASOK
+=================================================================
+
+1. MKCERT TELEPÍTÉSE ES CA INSTALLÁLÁSA
+----------------------------------------
+A mkcert egy lokális CA-t hoz létre és telepíti a rendszer
+tanúsítványtárolójába, így Chrome megbízik a generált tanúsítványokban
+QUIC/HTTP3 kapcsolatokon keresztül is.
+
+Telepítés (egyszer szükséges):
+  mkcert -install
+
+Tanúsítvány generálás (lejáratkor ismételni):
+  mkcert -cert-file certs/server.crt -key-file certs/server.key localhost 127.0.0.1 ::1
+
+FONTOS - miért mkcert és nem self-signed?
+  Chrome 120+ megköveteli az extendedKeyUsage: serverAuth bővítményt a
+  TLS tanúsítványon QUIC kapcsolatokhoz. A serverCertificateHashes
+  (hash-alapú bypass) csak ≤14 napos, self-signed certekkel müködik,
+  és Chrome 146-ban ez a mechanizmus megbízhatatlanná vált.
+  A mkcert CA-lánc az egyetlen megbízható megoldás localhost fejlesztéshez.
+
+2. NODE.JS FUGGOSEGEK
+---------------------
+  npm install
+
+
+=================================================================
+SERVER.MJS - MUKODESE
+=================================================================
+
+1. TANUSITVANY BETOLTES
+-----------------------
+A szerver indításkor betölti a certs/ könyvtárból a PEM formátumú
+privát kulcsot (server.key) és tanúsítványát (server.crt).
+
+
+2. HTTP/3 WEBTRANSPORT SZERVER INDITASA (port 4433)
+----------------------------------------------------
+Az @fails-components/webtransport csomag Http3Server osztályát
+használja, amely Google libquiche köré épített Node.js kötés.
+
+  const wt = new Http3Server({
+    port: 4433, host: '::', secret: '...', cert: certPem, privKey: keyPem
+  })
+  wt.startServer()
+
+Munkamenet-fogadás:
+  wt.sessionStream('/chat') -> ReadableStream<WebTransportSession>
+
+Minden beérkező session kezelése handleSession()-ben történik.
+
+
+3. SESSION KEZELES (handleSession)
+-----------------------------------
+Minden új kliens egy új WebTransportSession-ként érkezik.
+
+Lépések:
+  a) session.ready bevárása -> a QUIC/TLS handshake befejeződött
+  b) Egyedi sessionId kiosztása (növekvő számláló)
+  c) session.incomingBidirectionalStreams-ból az első stream kiolvasása
+     -> ezen a bidirekcionális streamen zajlik az összes kommunikáció
+  d) stream.writable.getWriter() -> kiírási csatorna a klienshez
+  e) Első beérkező üzenet ('join' típusú) tartalmazza a felhasználónevet
+  f) A kliens felvételre kerül a clients Map-be:
+       Map<sessionId, { writer, username }>
+
+Kezdeti üzenet küldése az új kliensnek (sendTo):
+  { type: 'welcome', user: 'server', text: 'Üdv, <username>!',
+    timestamp: 'HH:MM:SS', users: [...] }
+
+Értesítés a többi kliensnek (broadcast):
+  { type: 'join', user: username, text: '<username> csatlakozott', timestamp }
+
+
+4. UZENETEK FOGADASA ES FELDOLGOZASA
+--------------------------------------
+Végtelen while ciklusban olvassa a stream.readable-t.
+Minden beérkező Uint8Array-t TextDecoder-rel UTF-8 stringgé alakít,
+majd JSON.parse-szal dekódol.
+
+Kezelt üzenettípusok:
+  - 'chat': szöveges üzenet küldése
+      -> broadcast({ type: 'chat', user, text, timestamp })
+
+Ha a stream lezárul (kliens kilép):
+  -> clients Map-ból törlődik
+  -> broadcast({ type: 'leave', user, text: '<username> kilépett', timestamp })
+
+
+5. BROADCAST ES SENDTO
+------------------------
+broadcast(message, excludeId):
+  - Minden kapcsolódott kliensnek elküldi az üzenetet JSON+UTF-8-ban
+  - excludeId-vel kizárhatja a feladó klienst (pl. join értesítésnél)
+
+sendTo(sessionId, message):
+  - Csak egy meghatározott kliensnek küldi el az üzenetet
+
+
+6. HTTP SZERVER (port 3000)
+----------------------------
+Node.js beépített http.createServer() a frontend kiszolgálásához.
+
+Végpontok:
+  GET /           -> public/index.html kiszolgálása
+  GET /index.html -> public/index.html kiszolgálása
+
+
+=================================================================
+PUBLIC/INDEX.HTML - MUKODESE
+=================================================================
+
+FELHASZNÁLÓI FELÜLET
+---------------------
+- Header: kapcsolati állapot jelző (piros/zöld pont) + cím
+- Sidebar (bal oldal): online felhasználók listája
+- Chat terület (közép): üzenetek megjelenítéssel (saját jobb, más bal)
+- Input sor (alul): felhasználónév mező + csatlakozás gomb + üzenet mező + küldés gomb
+
+
+ÁLLAPOTVÁLTOZÓK
+---------------
+- transport:  WebTransport példány (null = nem kapcsolódott)
+- writer:     a bidirekcionális stream WritableStreamDefaultWriter-e
+- myName:     a saját felhasználónév (welcome üzenet után állítódik be)
+
+
+CSATLAKOZÁSI FOLYAMAT (connect)
+--------------------------------
+1. WebTransport API meglétének ellenőrzése (böngésző kompatibilitás)
+2. Felhasználónév meglétének ellenőrzése
+3. new WebTransport(url) -> a mkcert CA-lánc alapján validálja Chrome
+4. transport.ready bevárása -> QUIC handshake befejeződött
+5. transport.createBidirectionalStream() -> kétirányú adatcsatorna
+6. { type: 'join', text: username } küldése első üzenetként
+7. readStream() indítása háttérben -> szerver üzeneteket olvassa folyamatosan
+
+
+BEJÖVŐ ÜZENETEK KEZELÉSE (handleMessage)
+-----------------------------------------
+- 'welcome':  saját név beállítása, UI connected állapotba, online lista feltöltése
+- 'chat':     üzenet megjelenítése (saját/más megkülönböztetéssel)
+- 'join':     rendszerüzenet + felhasználó hozzáadása a listához
+- 'leave':    rendszerüzenet + felhasználó eltávolítása a listából
+
+
+=================================================================
+ÜZENETEK FORMÁTUMA (JSON protokoll)
+=================================================================
+
+Kliens -> Szerver:
+  { type: 'join', text: string }    -- első üzenet, a kért felhasználónév
+  { type: 'chat', text: string }    -- szöveges chat üzenet
+
+Szerver -> Kliens:
+  { type: 'welcome', user: 'server', text: string, timestamp: string, users: string[] }
+  { type: 'chat',    user: string,   text: string, timestamp: string }
+  { type: 'join',    user: string,   text: string, timestamp: string }
+  { type: 'leave',   user: string,   text: string, timestamp: string }
+
+Minden üzenet UTF-8 kódolt JSON string, Uint8Array-ként küldjük
+a WebTransport bidirekcionális stream-en keresztül.
+A timestamp 'HH:MM:SS' formátumú string.
+
+
+=================================================================
+INDÍTÁSI SORREND
+=================================================================
+
+1. (Egyszer) mkcert CA telepítése:
+     mkcert -install
+2. (Egyszer/lejáratkor) Tanúsítvány generálás:
+     mkcert -cert-file certs/server.crt -key-file certs/server.key localhost 127.0.0.1 ::1
+3. npm install
+4. node server.mjs
+5. Chrome indítása:
+     chrome --origin-to-force-quic-on=localhost:4433 http://localhost:3000
+6. Felhasználónév beírása, "Csatlakozás" gomb
+7. További kliensek: új lap / új ablak ugyanabban a Chrome-ban
+
+=================================================================
