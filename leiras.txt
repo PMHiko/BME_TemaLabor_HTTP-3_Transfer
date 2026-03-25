@@ -223,5 +223,12 @@ INDÍTÁSI SORREND
      chrome --origin-to-force-quic-on=localhost:4433 http://localhost:3000
 6. Felhasználónév beírása, "Csatlakozás" gomb
 7. További kliensek: új lap / új ablak ugyanabban a Chrome-ban
-
+(Inditáshoz szükséges commandline parancsok)
+  1. Szerver inditása 
+          node server.mjs
+  2. Chrome inditása commandlineből a megfelelelő flagek elhelyezésével (egyből a 3000-es protra)
+          "/c/Program Files/Google/Chrome/Application/chrome.exe" \
+              --origin-to-force-quic-on=localhost:4433 \
+              --ignore-certificate-errors-spki-list=9kbUbGRGDxSV0daeUS7Y7ZJwi7Z/e2MYw5OqHvob84U= \
+              http://localhost:3000
 =================================================================
